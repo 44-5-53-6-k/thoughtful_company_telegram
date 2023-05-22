@@ -21,6 +21,12 @@ services:
     depends_on:
       - mongo
 
+
+  your-service:
+    build:
+      context: .
+    ports:
+      - 12346:12346
   mongo_express:
     container_name: mongo-express
     image: mongo-express:latest

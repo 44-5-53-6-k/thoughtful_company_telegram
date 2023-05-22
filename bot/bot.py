@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime
 import openai
 
+
 import telegram
 from telegram import (
     Update,
@@ -28,12 +29,16 @@ from telegram.ext import (
     AIORateLimiter,
     filters
 )
+from langchain.chat_models import ChatOpenAI
+from langchain.callbacks.streaming_aiter import AsyncIteratorCallbackHandler
+from langchain.schema import HumanMessage
+
+
 from telegram.constants import ParseMode, ChatAction
 
 import config
 import database
 import openai_utils
-
 
 # setup
 db = database.Database()
@@ -236,15 +241,18 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
                 "markdown": ParseMode.MARKDOWN
             }[config.chat_modes[chat_mode]["parse_mode"]]
 
-            chatgpt_instance = openai_utils.ChatGPT(model=current_model)
-            if config.enable_message_streaming:
-                gen = chatgpt_instance.send_message_stream(_message, dialog_messages=dialog_messages, chat_mode=chat_mode)
+            callback_handler = AsyncIteratorCallbackHandler()
+            streaming_flag = config.enable_message_streaming and len(dialog_messages) > 0
+            chat_instance = ChatOpenAI(streaming=streaming_flag,
+                                       callbacks=[callback_handler], temperature=0.2, openai_api_key="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")
+            dialog_messages = [HumanMessage(content=message) for message in
+                               db.get_dialog_messages(user_id, dialog_id=None)]
+
+            if streaming_flag:
+                gen = chat_instance([HumanMessage(content=_message)])
             else:
-                answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed = await chatgpt_instance.send_message(
-                    _message,
-                    dialog_messages=dialog_messages,
-                    chat_mode=chat_mode
-                )
+                resp = chat_instance([HumanMessage(content=_message)])
+                answer = resp[-1].content  # get the content of the last message, which should be the bot's response
 
                 async def fake_gen():
                     yield "finished", answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed
@@ -253,6 +261,7 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
 
             prev_answer = ""
             async for gen_item in gen:
+                print(gen_item)
                 status, answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed = gen_item
 
                 answer = answer[:4096]  # telegram message limit
@@ -274,6 +283,7 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
                 prev_answer = answer
 
             # update user data
+
             new_dialog_message = {"user": _message, "bot": answer, "date": datetime.now()}
             db.set_dialog_messages(
                 user_id,
