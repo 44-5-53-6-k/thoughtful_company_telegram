@@ -85,7 +85,7 @@ If you want to add payments to your bot and create profitable business – write
     ```bash
     docker-compose --env-file config/config.env up --build
     ```
-
+5. Optional: https://www.mongodb.com/docs/manual/installation/ – install MongoDB
 ## ❤️ Top donations
 You can be in this list: <a href="https://github.com/karfly/chatgpt_telegram_bot/blob/main/static/donate/donate.md#%EF%B8%8F-donate" alt="Donate shield"><img src="https://img.shields.io/badge/-Donate-red?logo=undertale" /></a>
 
