@@ -14,6 +14,7 @@ class Database:
 
         self.user_collection = self.db["user"]
         self.dialog_collection = self.db["dialog"]
+        self.messages_collection = self.db["messages"]
 
     def check_if_user_exists(self, user_id: int, raise_exception: bool = False):
         if self.user_collection.count_documents({"_id": user_id}) > 0:
@@ -126,3 +127,16 @@ class Database:
             {"_id": dialog_id, "user_id": user_id},
             {"$set": {"messages": dialog_messages}}
         )
+
+    def log_message(self, user_id: int, message: dict, dialog_id: Optional[str] = None):
+        self.check_if_user_exists(user_id, raise_exception=True)
+
+        if dialog_id is None:
+            dialog_id = self.get_user_attribute(user_id, "current_dialog_id")
+
+        self.messages_collection.insert_one({
+            "user_id": user_id,
+            "dialog_id": dialog_id,
+            "message": message,
+            "timestamp": datetime.now()
+        })
