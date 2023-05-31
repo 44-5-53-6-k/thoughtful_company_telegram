@@ -1,179 +1,118 @@
-import os
-import logging
 import asyncio
-import traceback
-import html
-import json
-import tempfile
-from typing import Optional, Any, Dict, List, Union
-from uuid import UUID
-import uuid
+from threading import Thread
 
-from langchain import LLMChain
-from langchain.chains.conversation.base import ConversationChain
-from langchain.memory import ConversationBufferMemory
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-import pydub
-from pathlib import Path
-from datetime import datetime
-import openai
-
+from callback import TelegramStreamingCallbackHandler
 
 import telegram
 from telegram import (
     Update,
-    User,
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    BotCommand
+    InlineKeyboardMarkup
 )
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
     CallbackContext,
-    CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
-    AIORateLimiter,
     filters
 )
 from langchain.chat_models import ChatOpenAI
 from langchain.callbacks.base import AsyncCallbackHandler
-from langchain.schema import HumanMessage, BaseMessage, AIMessage, SystemMessage, LLMResult
+from langchain.schema import HumanMessage, BaseMessage, SystemMessage, LLMResult
 
-from telegram.constants import ParseMode, ChatAction
+from telegram.constants import ParseMode
+import ai_api
 
 import config
-import database
-import openai_utils
+from callback import DebuggingCallbackHandler
+
+import yaml
+import os
+
+# Load the YAML file
+with open('../config/config.yml', 'r') as config_file:
+    config_data = yaml.safe_load(config_file)
+
+# get the key from config/config.yml and set it to OPENAI_API_KEY
+OPENAI_API_KEY = config_data['openai_api_key']
+COHERE_API_KEY = config_data['cohere_api_key']
+# set os environment variable
+os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+print(os.getenv("OPENAI_API_KEY"))
+import cohere
+
+co = cohere.Client(COHERE_API_KEY)
 
 user_semaphores = {}
 
+vectorstore = ai_api.init_vectorstore()
+print("init vectorstore")
+import pyrogram
 
-class MyCallbackHandler(AsyncCallbackHandler):
-    """Async callback handler that can be used to handle callbacks from langchain."""
+api_id = "20282180"
+api_hash = "a1264d4ca1cc770ed1ed1bee674ab46a"
 
-    def __init__(self, bot, chat_id):
-        self.bot = bot
-        self.placeholder_message = None
-        self.cancel_reply_markup = None
-        self.prev_answer = ""
-        self.tokens = []
-        self.chat_id = chat_id
+# TODO add on startup and on shotdown handlers
 
-    async def on_chat_model_start(
-            self,
-            serialized: Dict[str, Any],
-            messages: List[List[BaseMessage]],
-            *,
-            run_id: UUID,
-            parent_run_id: Optional[UUID] = None,
-            **kwargs: Any,
-    ) -> Any:
-        # placeholder_message = await update.message.reply_text("...")
-        # change to self.bot
-        placeholder_message = await self.bot.send_message(chat_id=self.chat_id, text="...")
-        self.placeholder_message = placeholder_message
+file_queue = asyncio.Queue()
+is_downloading = False
 
-        cancel_button = InlineKeyboardButton("Cancel generation",
-                                             callback_data=f"cancel_{placeholder_message.message_id}")
-        self.cancel_reply_markup = InlineKeyboardMarkup([[cancel_button]])
+# Add a file to the queue
 
-        keyboard = [[cancel_button]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # send the message with the keyboard
-        # update keyboard for the message with id = placeholder_message.message_id
-        await placeholder_message.edit_text("...", reply_markup=reply_markup)
-        return
+async def download_file(file_id, file_name, chat_id):
+    global is_downloading
+    async def progress(current, total):
+        if total > 0:
+            print(f"{current * 100 / total:.1f}%")
+        else:
+            print(f"{current} of unknown")
 
-    async def on_llm_end(
-            self,
-            response: LLMResult,
-            *,
-            run_id: UUID,
-            parent_run_id: Optional[UUID] = None,
-            **kwargs: Any,
-    ) -> Any:
-        # change reply markup to vote buttons
-        keyboard = [[InlineKeyboardButton("👍", callback_data=f"like_{self.placeholder_message.message_id}"),
-                     InlineKeyboardButton("👎", callback_data=f"dislike_{self.placeholder_message.message_id}")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await self.bot.edit_message_reply_markup(chat_id=self.chat_id,
-                                                 message_id=self.placeholder_message.message_id,
-                                                 reply_markup=reply_markup)
+    pyro_app = pyrogram.Client("my_account", api_id=api_id, api_hash=api_hash,
+                               bot_token="5899466534:AAF3LVMo2a5ybcjVv5TMo2Je0BSl2smyKX8")
 
-    async def on_llm_error(
-            self,
-            error: Union[Exception, KeyboardInterrupt],
-            *,
-            run_id: UUID,
-            parent_run_id: Optional[UUID] = None,
-            **kwargs: Any,
-    ) -> None:
-        print("on_llm_error")
-        print(error)
+    async with pyro_app:
+        file = await pyro_app.download_media(file_id, file_name=file_name, progress=progress)
+        await pyro_app.send_message(chat_id, f"File {file_name} downloaded, id {file_id}")
 
-    async def on_llm_new_token(self, token: str, *, run_id: UUID, parent_run_id: Optional[UUID] = None,
-                               **kwargs: Any) -> None:
-        """Run on new LLM token. Only available when streaming is enabled."""
 
-        self.tokens.append(token)  # add new token to the list
-        message = ''.join(self.tokens)  # create a message from all gathered tokens
+async def media_handler(update: Update, context: CallbackContext) -> None:
+    message = update.effective_message
+    print(f"Handling media from {update.effective_user}")
+    global is_downloading
 
-        gen_item = token  # assuming that gen_item is token
-        # status, answer, (n_input_tokens, n_output_tokens), n_first_dialog_messages_removed = gen_item
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name
+        chat_id = message.chat_id
 
-        # answer = answer[:4096]  # telegram message limit
-        if (len(message) > 4096):
-            message = message[:4096]
-        #     TODO imporve this to send new message instead
+        await file_queue.put((file_id, file_name, chat_id))
 
-        # if message is empty or if it is the same, do not send
-        if len(message) == 0 or message == self.prev_answer:
-            return
+        if not is_downloading:
+            is_downloading = True
+            context.bot.loop.create_task(download_files(context))
 
-        try:
-            await self.bot.edit_message_text(message, chat_id=self.placeholder_message.chat_id,
-                                             message_id=self.placeholder_message.message_id,
-                                             parse_mode=ParseMode.HTML, reply_markup=self.cancel_reply_markup)
-        except telegram.error.BadRequest as e:
-            if str(e).startswith("Message is not modified"):
-                pass
-            else:
-                await self.bot.edit_message_text(message, chat_id=self.placeholder_message.chat_id,
-                                                 message_id=self.placeholder_message.message_id)
-
-        await asyncio.sleep(0.005)  # wait a bit to avoid flooding
-
-        self.prev_answer = message
+        await message.reply_text(f"File {file_name} added to queue")
 
 
 async def message_handle(update: Update, context: CallbackContext, message=None, use_new_dialog_timeout=True):
-    print("message_handle")
-    # check if bot was mentioned (for group chats)
-
-    # check if message is edited
     _message = message or update.message.text
 
-    # remove bot mention (in group chats)
+    print(f"Handling message from {update.effective_user}")
+
     if update.message.chat.type != "private":
         _message = _message.replace("@" + context.bot.username, "").strip()
 
     user_id = update.message.from_user.id
 
     async def message_handle_fn():
-        # new dialog timeout
-
-        # in case of CancelledError
         n_input_tokens, n_output_tokens = 0, 0
 
         try:
             await update.message.chat.send_action(action="typing")
 
             if _message is None or len(_message) == 0:
-                await update.message.reply_text("🥲 You sent <b>empty message</b>. Please, try again!", parse_mode=ParseMode.HTML)
+                await update.message.reply_text("🥲 You sent <b>empty message</b>. Please, try again!",
+                                                parse_mode=ParseMode.HTML)
                 return
 
             # parse_mode = {
@@ -181,14 +120,39 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
             #     "markdown": ParseMode.MARKDOWN
             # }
 
-            callback_handler = MyCallbackHandler(context.bot, update.message.chat_id )
+            vector = co.embed(
+                texts=[_message],
+                model="embed-multilingual-v2.0",
+            ).embeddings[0]
+            docs = vectorstore.similarity_search_by_vector(vector)
+            # filter docs with empty page content
+            docs = [doc for doc in docs if doc.page_content is not None and len(doc.page_content) > 0]
+
+            callback_handler = TelegramStreamingCallbackHandler(context.bot, update.message.chat_id)
             # streaming_flag = config.enable_message_streaming and len(dialog_messages) > 0
             streaming_flag = True
-            prompt_template = "Roleplay: Provide the dumbest and the most absurd answer to it."
+            # get 5 most similar documents and put it to $context
+            # reduce them to a string
+            # Each doc should start with "Document N", where N is the number of the document
+            max_docs = 5
+            docs_length = len(docs)
+            range_value = min(max_docs, docs_length)
+            print(docs)
+            knowledge_context = "\n".join([f"Document {i + 1}: {docs[i].page_content}" for i in range(0, range_value)])
+            print('here')
 
+            prompt_template = f"""
+            Your name is Margulan Seissembai. You're a spiritual mentor to help me better understand my inner self and your philosophy. 
+            You should reply in a professional yet educative manner. You should provide lots of detail and use everyday life examples.
+            You should not make information up. If you can't answer because you don't have the information, output a clarifying question and allow me to respond by providing the information. 
+
+            Question: {_message}
+            Context from Margulan's knowledge: {knowledge_context}
+            Helpful Answer:"""
+            # prompt_template = 'Use the following portion of a long document to see if any of the text is relevant to answer the question. Document: \n\n' + docs[0].page_content
 
             if streaming_flag:
-                chat = ChatOpenAI(temperature=0.2, openai_api_key="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",
+                chat = ChatOpenAI(temperature=0.2, openai_api_key=os.environ.get("OPENAI_API_KEY"),
                                   callbacks=[callback_handler], streaming=streaming_flag)
                 # Create your list of messages.
                 # Here we're just sending a single message from a hypothetical user "Alice".
@@ -196,7 +160,7 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
                 # Asynchronously generate a chat response.
                 batch_messages = [
                     [
-                        SystemMessage(content="Roleplay: Provide the dumbest and the most absurd answer to it."),
+                        SystemMessage(content=prompt_template),
                         HumanMessage(content=_message)
                     ],
                 ]
@@ -204,14 +168,22 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
                 # print(result)
 
             else:
-                chat = ChatOpenAI(temperature=0.2, openai_api_key="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",
-                                  streaming=streaming_flag)
-                memory = ConversationBufferMemory()
-                llm_chain = ConversationChain(
-                    llm=chat,
-                    prompt=prompt_template,
-                    memory=memory,
-                )
+                # get type of docs[0]
+
+                # answer with docs
+                await update.message.reply_text(docs[0].page_content, parse_mode=ParseMode.HTML)
+
+                # answer = qa_chain.run(
+                #     {"question": _message, "chat_history": []}
+                # )
+                # chat = ChatOpenAI(temperature=0.2, openai_api_key="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",
+                #                   streaming=streaming_flag)
+                # memory = ConversationBufferMemory()
+                # llm_chain = ConversationChain(
+                #     llm=chat,
+                #     prompt=prompt_template,
+                #     memory=memory,
+                # )
                 # resp = chat_instance([HumanMessage(content=_message)])
                 # answer = resp[-1].content  # get the content of the last message, which should be the bot's response
                 #
@@ -239,11 +211,10 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
         #         text = f"✍️ <i>Note:</i> Your current dialog is too long, so <b>{n_first_dialog_messages_removed} first messages</b> were removed from the context.\n Send /new command to start new dialog"
         #     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-
     await message_handle_fn()
 
 
-def run_bot() -> None:
+async def run_bot() -> None:
     application = (
         ApplicationBuilder()
         .token(config.telegram_token)
@@ -253,41 +224,11 @@ def run_bot() -> None:
         .build()
     )
 
-    # add handlers
-    user_filter = filters.ALL
-    # if len(config.allowed_telegram_usernames) > 0:
-    #     usernames = [x for x in config.allowed_telegram_usernames if isinstance(x, str)]
-    #     user_ids = [x for x in config.allowed_telegram_usernames if isinstance(x, int)]
-    #     user_filter = filters.User(username=usernames) | filters.User(user_id=user_ids)
+    document_handler = MessageHandler(filters.ATTACHMENT, media_handler)
+    application.add_handler(document_handler)
 
-    # application.add_handler(CommandHandler("start", start_handle, filters=user_filter))
-    # application.add_handler(CommandHandler("help", help_handle, filters=user_filter))
-    # application.add_handler(CommandHandler("help_group_chat", help_group_chat_handle, filters=user_filter))
-    #
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, message_handle))
-    # add handler for callback buttons
-
-
-    # application.add_handler(CommandHandler("retry", retry_handle, filters=user_filter))
-    # application.add_handler(CommandHandler("new", new_dialog_handle, filters=user_filter))
-    # application.add_handler(CommandHandler("cancel", cancel_handle, filters=user_filter))
-    #
-    # application.add_handler(MessageHandler(filters.VOICE & user_filter, voice_message_handle))
-
-    # application.add_handler(CommandHandler("mode", show_chat_modes_handle, filters=user_filter))
-    # application.add_handler(CallbackQueryHandler(show_chat_modes_callback_handle, pattern="^show_chat_modes"))
-    # application.add_handler(CallbackQueryHandler(set_chat_mode_handle, pattern="^set_chat_mode"))
-    #
-    # application.add_handler(CommandHandler("settings", settings_handle, filters=user_filter))
-    # application.add_handler(CallbackQueryHandler(set_settings_handle, pattern="^set_settings"))
-    #
-    # application.add_handler(CommandHandler("balance", show_balance_handle, filters=user_filter))
-    #
-    # application.add_error_handler(error_handle)
-
-    # start the bot
     application.run_polling()
-
 
 if __name__ == "__main__":
     run_bot()
+    # run_pyrogram()
