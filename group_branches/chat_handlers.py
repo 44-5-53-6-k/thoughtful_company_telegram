@@ -61,9 +61,6 @@ tools = [
 def init_memory(conversation_id):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-    agent_chain = initialize_agent(tools, llm, agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION, verbose=True,
-                                   memory=memory)
-
     print("Agent created for topic: ", conversation_id)
     return memory
 

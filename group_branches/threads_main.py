@@ -1,5 +1,6 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
+from telegram.constants import ChatAction
 
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage, BaseMessage, SystemMessage, LLMResult
@@ -16,6 +17,7 @@ with open('../config/config.yml', 'r') as config_file:
 
 os.environ["MONGO_DB_URL"] = config_data['mongo_margulan_db_url']
 os.environ["COHERE_API_KEY"] = config_data['cohere_api_key']
+os.environ["TELEGRAM_BOT_TOKEN"] = config_data['telegram_token_1']
 
 import mongo_utils
 from chat_handlers import init_memory, create_agent_from_memory
@@ -55,9 +57,10 @@ def generate_topic_name(update):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = update.message.chat.type == 'group' or update.message.chat.type == 'supergroup'
     if is_group:
-        await update.message.reply_text("Hello! I'm your habit tracker bot.")
+        await update.message.reply_text("Привет! Я - бот образовательной платформы Margulan AI. У меня есть малая крупица знаний Маргулана Сейсембая, но я постоянно учусь! Спросите у меня вопрос на тему того, что учит Маргулан Калиевич и я постараюсь ответить на ваш вопрос используя его знание. \n\n Чтобы начать новый диалог, нажми /new_topic")
+        return
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Hello! I'm your habit tracker bot.")
+    await update.message.reply_text("Привет! Я - бот образовательной платформы Margulan AI. У меня есть малая крупица знаний Маргулана, но я постоянно учусь! Спросите у меня вопрос на тему того, что учит Маргулан и я постараюсь ответить на него используя знание Маргулана")
 
 
 async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,7 +104,7 @@ async def new_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     print("Creating new topic")
     default_message = """
-        Hello! How may I assist you?\n\n<b>Commands</b>:\n/new_topic - create a new topic\n/delete_topic - delete the current topic\n/delete_all_topics - delete all the topics
+        Привет! Что бы тебе хотелось узнать?\n\n<b>Команды</b>:\n/new_topic - Начать новый диалог\n/delete_topic - удалить текущий диалог
     """
 
     try:
@@ -127,7 +130,7 @@ async def new_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mongo_utils.on_new_thread(user, update.message.chat.id, topic_id, topic_name, hello_message.message_id)
 
         await update.message.reply_text(
-            f"<code>Announcement!\n</code>New topic created: <a href='{link_to_newly_created_topic}'>{topic_name}</a>",
+            f"<code>Новый диалог создан!\n</code>Нажмите чтобы открыть чат: <a href='{link_to_newly_created_topic}'>{topic_name}</a>",
             parse_mode="HTML")
 
     except Exception as e:
@@ -182,6 +185,8 @@ async def new_forum_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def new_message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # set message status typing
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     is_group = update.message.chat.type == 'group' or update.message.chat.type == 'supergroup'
     is_private_message = update.message.chat.type == 'private'
 
@@ -217,7 +222,7 @@ async def delete_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Main function
 if __name__ == '__main__':
-    application = ApplicationBuilder().token("6011659848:AAEicZv8J0S3ywzagPNejqolqlD3lstYuBk").build()
+    application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
 
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
