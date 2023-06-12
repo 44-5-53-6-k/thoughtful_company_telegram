@@ -11,3 +11,4 @@ langchain~=0.0.171
 yaml~=0.2.5
 cohere~=4.5.1
 pyrogram~=2.0.106
+Telethon~=1.28.5
