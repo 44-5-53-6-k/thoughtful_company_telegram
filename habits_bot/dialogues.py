@@ -4,6 +4,7 @@ from telegram.ext import ConversationHandler, CommandHandler, ContextTypes, Mess
 from langchain.prompts import PromptTemplate
 from langchain.chat_models import ChatOpenAI
 import datetime
+import re
 
 llm = ChatOpenAI(temperature=0, model_name='gpt-4')
 prompt = PromptTemplate(
@@ -53,22 +54,36 @@ def add_habit_dialogue(user_habits):
     async def habit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         habit = update.message.text
         context.user_data['habit'] = habit
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="At what time of the day do you want to be reminded? (HH:MM) 24 hour format or 'No' if you don't want to be reminded.")
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text="""At what times of the day do you want to be reminded? (HH:MM) Please use a 24-hour format and separate multiple times with a comma. 
+9:00, 12:00, 19:00
+If you don't want to be reminded, please type 'No' or "-".""")
         return REMINDER_TIME
 
     async def reminder_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        reminder_time = update.message.text
-        if reminder_time.lower() == 'no':
-            reminder_time = None
-        else:
-            try:
-                datetime.datetime.strptime(reminder_time, '%H:%M')
-            except ValueError:
-                await context.bot.send_message(chat_id=update.effective_chat.id,
-                                               text="Please enter a valid time in the format HH:MM.")
-                return REMINDER_TIME
+        reminders_text = update.message.text
 
-        context.user_data['reminder_time'] = reminder_time
+        # Initialize an empty list for the reminders
+        reminders = []
+
+        # Split the user's message into parts using comma, space, or semicolon as the delimiter
+        for time_part in re.split('[,; ]+', reminders_text):
+            # Ignore empty parts (which can happen if the user uses two delimiters in a row, like ",;")
+            if time_part:
+                if time_part.lower() == 'no' or time_part == '-':
+                    time_part = None
+                else:
+                    try:
+                        datetime.datetime.strptime(time_part, '%H:%M')  # Validate the time format
+                        reminders.append({"time": time_part, "status": "active"})
+                    except ValueError:
+                        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                                       text=f"'{time_part}' is not a valid time. Please enter times in the format HH:MM, separated by commas, spaces, or semicolons.")
+                        return REMINDER_TIME
+
+        # Store the list of reminders in context.user_data
+        context.user_data['reminders'] = reminders
+
         await context.bot.send_message(chat_id=update.effective_chat.id, text="How often do you want to do the habit?")
         return FREQUENCY
 
@@ -82,6 +97,9 @@ def add_habit_dialogue(user_habits):
         importance_note = update.message.text
         context.user_data['importance_note'] = importance_note
         # add to mongodb
+        user_data = context.user_data
+        user_data['user_id'] = update.effective_chat.id
+
         user_habits.insert_one(context.user_data)
         # check if it was added
         result = user_habits.find_one(context.user_data)
