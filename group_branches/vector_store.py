@@ -13,4 +13,4 @@ def init_vectorstore():
         auth_client_secret=weaviate.AuthApiKey("VkEhJ9R00YBnpgvmhqnx8kwbT1TNOKJBFzAw")
     )
     # global vectorstore
-    return Weaviate(client, "NotionPage", "answer")
+    return Weaviate(client, "NotionPage", "answer", attributes=["source"])
