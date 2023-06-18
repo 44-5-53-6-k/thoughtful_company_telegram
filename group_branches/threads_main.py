@@ -117,7 +117,7 @@ async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic_name = utils.generate_topic_name(update)
 
     default_message = """
-        Новый диалог начат! Для поиска, начинайте диалог со слов: "Найди в базе знаний о ...?". Наш поиск работает лучше всего, когда вы спрашиваете конкретные вопросы.
+        Новый диалог начат! Чтобы бот искал информацию, а не отвечал от себя, начинайте диалог со слов: "Найди в базе знаний о ...?". Наш поиск работает лучше всего, когда вы спрашиваете конкретные вопросы.
     
 ✅ Хороший пример: <code>Найди в базе знаний, как управлять своим временем</code>
 
@@ -251,7 +251,7 @@ async def new_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await utils.log_costs(update, cb.total_cost)
         except Exception as e:
             print(e)
-            message = "Что-то пошло не так. Попробуйте сформулировать вопрос иначе."
+            message = "Что-то пошло не так. Начинате новый чат и попробуйте сформулировать вопрос иначе.\n\n/new_chat"
 
     await utils.update_chat_history(conversation_id, agent_chain.memory.buffer)
 
@@ -342,12 +342,11 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await new_chat(update, context)
 
 async def authorization_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
-    # if update.effective_user.id in USERS_WITH_ACCESS:
-    #     pass
-    # else:
-    #     await update.effective_message.reply_text(get_system_message("authorization/access_denied"))
-    #     raise ApplicationHandlerStop
+    if update.effective_user.id in USERS_WITH_ACCESS:
+        pass
+    else:
+        await update.effective_message.reply_text(get_system_message("authorization/access_denied"))
+        raise ApplicationHandlerStop
 
 
 def async_runner():
