@@ -32,8 +32,10 @@ llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), temperature=0, mode
 co = cohere.Client(os.getenv("COHERE_API_KEY"))
 
 from vector_store import init_vectorstore
+
 vectorstore = init_vectorstore()
 print("init vectorstore")
+
 
 def embed_message(message):
     vector = co.embed(
@@ -56,26 +58,25 @@ def retreive_search_results(search_term):
     knowledge_context = "Документы из датабазы\nПри ответе указывай ссылки на те источники, которые используешь\n"
 
     for i in range(range_value):
-        knowledge_context += f"Источник {i+1}: https://notion.so/{docs[i].metadata['source'].replace('-','')} \n{docs[i].page_content}\n\n"
+        knowledge_context += f"Источник {i + 1}: https://notion.so/{docs[i].metadata['source'].replace('-', '')} \n{docs[i].page_content}\n\n"
 
     return knowledge_context
 
 
 tools = [
     Tool(
-        name="Search Margulan's knowledge base",
+        name="Поиск по знаниям Маргулана",
         func=retreive_search_results,
-        description="""Provides search results from Margulan's knowledge base.
-При ответе всегда испольузуй ссылки на источники, если они есть
-Пример: 
+        description="""Каждый раз, когда спрашивают мнение Маргулана по какой-то теме, отвечай только на основании результатов поисков.
+При ответе ВСЕГДА испольузуй ссылки на источники:
+Пример ответа: 
 ```
-Маргулан говорил, что все люди должны уметь планировать [1] и искать способы улучшать свою жизнь [2].
-
-[1] https://margulan.info/plan
-[2] https://margulan.info/kaizen
+Маргулан говорил, что все люди должны уметь планировать [1] и искать способы улучшать свою жизнь [2].\n\n\s[1] https://notion.so/page-id \n\s[2] https://notion.so/page-id
+```
         """
     ),
 ]
+
 
 def init_memory(conversation_id):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
@@ -104,6 +105,7 @@ class CustomOutputParser(AgentOutputParser):
         # Return the action and action input
         return AgentAction(tool=action, tool_input=action_input.strip(" ").strip('"'), log=llm_output)
 
+
 # Set up a prompt template
 class CustomPromptTemplate(BaseChatPromptTemplate):
     # The template to use
@@ -128,6 +130,7 @@ class CustomPromptTemplate(BaseChatPromptTemplate):
         formatted = self.template.format(**kwargs)
         return [HumanMessage(content=formatted)]
 
+
 def create_agent_from_memory(chat_history, system_message=None):
     chat_memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     chat_memory.chat_memory.messages = chat_history
@@ -149,7 +152,7 @@ def create_agent_from_memory(chat_history, system_message=None):
 
     human_message = """TOOLS
 ------
-Assistant can ask the user to use tools to look up information that may be helpful in answering the users original question. The tools the human can use are:
+Assistant MUST use tools every time to look up information that may be helpful in answering the users original question. The tools the human can use are:
 
 {{tools}}
 

@@ -1,86 +1,61 @@
-from telegram import Update, ReplyKeyboardMarkup, BotCommand
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler, \
-    CallbackQueryHandler
+import asyncio
+
+import schedule as schedule
+from langchain.callbacks import get_openai_callback
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters,  \
+     ApplicationHandlerStop, TypeHandler
 from telegram.constants import ChatAction
 
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage, BaseMessage, SystemMessage, LLMResult
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 
 import uuid
 import yaml
 import os
-import datetime
-
-from group_branches.scenes import add_prompt_scene
 
 with open('../config/config.yml', 'r') as config_file:
     config_data = yaml.safe_load(config_file)
 
 os.environ["MONGO_DB_URL"] = config_data['mongo_margulan_db_url']
-print(config_data['mongo_margulan_db_url'])
 os.environ["COHERE_API_KEY"] = config_data['cohere_api_key']
 os.environ["TELEGRAM_BOT_TOKEN"] = config_data['telegram_token_1']
 os.environ["NOTION_TOKEN"] = config_data['notion_thoughtful_company']
 
 import utils
-from utils import get_data_from_notion
 from chat_handlers import init_memory, create_agent_from_memory
+from telethon_helper import fetch_user_ids
 
 
-database_id = "5af5ce3becee4dbabdd8ed22d6955c2f"
-data = utils.get_data_from_notion(database_id)
+USERS_WITH_ACCESS = fetch_user_ids('main_session', 1789045052)
 
-def get_prompt_by_id(prompt_id):
-    for prompt in data['prompts']:
-        if prompt['id'] == prompt_id:
-            return prompt
+def get_system_message(path):
+    # Split path by "/"
+    path_parts = path.split('/')
 
-    return None
+    messages_data = None
+    with open('system_messages/messages-en.json', 'r') as messages_file:
+        messages_data = yaml.safe_load(messages_file)
 
+    # Traverse through the dictionary
+    data = messages_data
+    for part in path_parts:
+        data = data.get(part)
 
-def save_conversation(conversation_id, context, chat_history):
-    if "conversations" not in context.chat_data:
-        context.chat_data["conversations"] = {}
-    if conversation_id not in context.chat_data["conversations"]:
-        context.chat_data["conversations"][conversation_id] = {}
-    context.chat_data["conversations"][conversation_id]["chat_history"] = chat_history
+        # If at any point data is None, that means the path doesn't exist
+        # So we return a default message or handle it in another way
+        if data is None:
+            return 'Path does not exist'
 
-
-def retreive_conversation(conversation_id, context):
-    chat_history = None
-
-    if context.chat_data and context.chat_data["conversations"] and (
-            conversation_id in context.chat_data["conversations"]):
-        chat_history = context.chat_data["conversations"][conversation_id]["chat_history"]
-    else:
-        print(f"Session memory is empty, retrieving from database")
-        chat_history = utils.get_chat_history(conversation_id)
-
-    print(f"Retrieved chat history: {chat_history}")
-    return chat_history
-
-
-def generate_topic_name(update):
-    time = datetime.datetime.now()
-    adequate_time = f"{time.hour}:{time.minute} {time.day}.{time.month}.{time.year}"
-    topic_name = adequate_time
-
-    if update.message:
-        topic_name = update.message.text.split(' ', 1)[1] if len(update.message.text.split(' ', 1)) > 1 else str(
-        adequate_time)
-
-    return topic_name
+    # If we made it through the path without data being None, we return the found message
+    return data
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = update.message.chat.type == 'group' or update.message.chat.type == 'supergroup'
-    message_to_send = "Привет! Я - чат-бот образовательной платформы Margulan AI. У меня есть малая крупица знаний Маргулана Сейсембая, но я постоянно учусь! Задайте мне вопрос на тему того, что учит Маргулан Калиевич и я постараюсь ответить на ваш вопрос используя его знание. Я стараюсь не придумывать ответ и сначала пробую искать информацию среди видео нашей платформы. Однако иногда я все равно ошибаюсь, поэтому лучше проверяйте мой ответ в источниках! \n Пример запроса: 'Найди информацию про то, как управлять своим временем?' \n\n Чтобы начать новый диалог, нажми /new_chat"
+    message_to_send = "Привет! Я - чат-бот образовательной платформы Margulan AI. У меня есть малая крупица знаний <b>Маргулана Сейсембая</b>, но я постоянно учусь! \n\nЗадайте мне вопрос на тему того, что учит Маргулан Калиевич и я постараюсь ответить на ваш вопрос используя его знание. Я стараюсь не придумывать ответ и сначала пробую искать информацию среди видео нашей платформы. Однако иногда я все равно ошибаюсь, поэтому лучше проверяйте мой ответ в источниках! \n\n<code>Пример запроса: 'Найди информацию про то, как управлять своим временем?'</code>\n\n Чтобы начать новый диалог, нажмите /new_chat"
     if is_group:
-        await update.message.reply_text("Привет! Я - бот образовательной платформы Margulan AI. У меня есть малая крупица знаний Маргулана Сейсембая, но я постоянно учусь! Спросите у меня вопрос на тему того, что учит Маргулан Калиевич и я постараюсь ответить на ваш вопрос используя его знание. \n\n Чтобы начать новый диалог, нажми /new_topic")
+        await update.message.reply_text(message_to_send, parse_mode='HTML')
     else:
-        await update.message.reply_text("Привет! Я - бот образовательной платформы Margulan AI. У меня есть малая крупица знаний Маргулана, но я постоянно учусь! Спросите у меня вопрос на тему того, что учит Маргулан и я постараюсь ответить на него используя знание Маргулана")
+        await update.message.reply_text(message_to_send, parse_mode='HTML')
 
     # # delete_my_commands at bot
     # await context.bot.delete_my_commands()
@@ -112,40 +87,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # # Send the message to the user
     # await update.message.reply_text(text=message)
 
-async def choose_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompts = data['prompts']
-    # show keyboard with prompts to user
-    # keyboard = [[prompt] for prompt in prompts]
-    keyboard = []
-    for prompt in prompts:
-        keyboard_item = {
-            "text": prompt['title'],
-            "callback_data": f"prompt_{prompt['id']}"
-        }
-        keyboard.append([keyboard_item])
-
-    reply_markup = {
-        "inline_keyboard": keyboard
-    }
-    await update.message.reply_text('Выберите тему, которую хотите изучить', reply_markup=reply_markup)
 
 
-async def choose_private_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompts = utils.get_user_prompts(update.message.from_user.id)
-    # show keyboard with prompts to user
-    # keyboard = [[prompt] for prompt in prompts]
-    keyboard = []
-    for prompt in prompts:
-        keyboard_item = {
-            "text": prompt['title'],
-            "callback_data": f"prompt_{prompt['_id']}"
-        }
-        keyboard.append([keyboard_item])
-
-    reply_markup = {
-        "inline_keyboard": keyboard
-    }
-    await update.message.reply_text('Выберите тему, которую хотите изучить', reply_markup=reply_markup)
 
 async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("creating new chat branch")
@@ -164,11 +107,21 @@ async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print("Error: unsupported update type")
         return
 
-    topic_name = generate_topic_name(update)
+    # check if user has access
+    has_access = await utils.has_access(user.id)
+
+    if not has_access:
+        await update.message.reply_text("Упс. Ваши лимиты исчерпаны. Ждем вас в следующий раз!")
+        return
+
+    topic_name = utils.generate_topic_name(update)
 
     default_message = """
-        Внимательно вас слушаю! О чем бы вы хотели поговорить? Для того, чтобы я искал ответ среди знаний Маргулана, начните свой запрос со слов "Найди ..." \n\n
-    """
+        Новый диалог начат! Для поиска, начинайте диалог со слов: "Найди в базе знаний о ...?". Наш поиск работает лучше всего, когда вы спрашиваете конкретные вопросы.
+    
+✅ Хороший пример: <code>Найди в базе знаний, как управлять своим временем</code>
+
+❌ Плохой пример: <code>Как стать богатым?</code>"""
 
     current_prompt = None
     prompt_text = None
@@ -209,7 +162,7 @@ async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # CRETING NEW AGENT
         memory = init_memory(conversation_id)
-        save_conversation(conversation_id, context, memory.buffer)
+        utils.save_conversation(conversation_id, context, memory.buffer)
 
         chat_data = {
             "user_id": user.id,
@@ -219,7 +172,7 @@ async def new_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "chat_id": chat.id,
             "prompt_data": current_prompt
         }
-        utils.on_new_thread(chat_data)
+        await utils.on_new_thread(chat_data)
 
     except Exception as e:
         print(e)
@@ -231,7 +184,7 @@ async def new_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # NOT TESTED
 
     is_group = update.message.chat.type == 'group' or update.message.chat.type == 'supergroup'
-    topic_name = generate_topic_name(update)
+    topic_name = utils.generate_topic_name(update)
 
     if not is_group:
         await update.message.reply_text("This command is only available in a forum mode.")
@@ -261,8 +214,9 @@ async def new_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # TODO #1 switch saving history to saving agent
         # Warning: If chat migrates to supergroup, chat_data will still be linked to previous chat id
         chat_history = agent_memory.buffer
-        save_conversation(topic_id, context, agent_memory.buffer)
-        utils.on_new_thread(user, update.message.chat.id, topic_id, topic_name, hello_message.message_id)
+        utils.save_conversation(topic_id, context, agent_memory.buffer)
+        # TODO Rewrite
+        # await utils.on_new_thread(user, update.message.chat.id, topic_id, topic_name, hello_message.message_id)
 
         await update.message.reply_text(
             f"<code>Новый диалог создан!\n</code>Нажмите чтобы открыть чат: <a href='{link_to_newly_created_topic}'>{topic_name}</a>",
@@ -284,15 +238,27 @@ async def new_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("You don't have any active conversations. Start one with /new_chat")
         return
 
+    # send message "🔎Ищу ответ среди знаний Маргулана..."
+    target_message_id = await update.message.reply_text("🔎 Ищу ответ среди знаний Маргулана... 🕵️")
+
     # for now every operation is loaded from mongo and saved to it
-    thread_data = utils.get_thread_data(conversation_id)
+    thread_data = await utils.get_thread_data(conversation_id)
 
     agent_chain = create_agent_from_memory(thread_data["chat_history"], thread_data["prompt_data"]['prompt'])
-    message = agent_chain.run(input=message_text)
+    with get_openai_callback() as cb:
+        try:
+            message = agent_chain.run(input=message_text)
+            await utils.log_costs(update, cb.total_cost)
+        except Exception as e:
+            print(e)
+            message = "Что-то пошло не так. Попробуйте сформулировать вопрос иначе."
 
-    utils.update_chat_history(conversation_id, agent_chain.memory.buffer)
+    await utils.update_chat_history(conversation_id, agent_chain.memory.buffer)
 
-    await update.message.reply_text(message)
+    # remove all "//" from message
+    message = message.replace("\\\\", "")
+
+    await target_message_id.edit_text(message)
 
     return
 
@@ -308,13 +274,13 @@ async def new_forum_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     conversation_id = update.message.message_thread_id
-    chat_history = retreive_conversation(conversation_id, context)
+    chat_history = utils.retreive_conversation(conversation_id, context)
 
     agent_chain = create_agent_from_memory(chat_history)
     message = agent_chain.run(input=message_text)
 
     # UPDATE CHAT HISTORY IN MONGO
-    utils.update_chat_history(conversation_id, agent_chain.memory.buffer)
+    await utils.update_chat_history(conversation_id, agent_chain.memory.buffer)
 
     await update.message.reply_text(message)
 
@@ -359,7 +325,7 @@ async def delete_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     prompt_id = query.data.split("_")[1]
-    prompt = get_prompt_by_id(prompt_id)
+    prompt = utils.get_prompt_by_id(prompt_id)
 
     user_id = update.effective_user.id
 
@@ -375,12 +341,32 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer(query_answer)
     await new_chat(update, context)
 
+async def authorization_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pass
+    # if update.effective_user.id in USERS_WITH_ACCESS:
+    #     pass
+    # else:
+    #     await update.effective_message.reply_text(get_system_message("authorization/access_denied"))
+    #     raise ApplicationHandlerStop
 
-# Main function
-if __name__ == '__main__':
+
+def async_runner():
+    # Create an asyncio event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+
+def main():
     # get data from notion
 
     application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+
+    auth_handler = TypeHandler(Update, authorization_user)
+    application.add_handler(auth_handler, -1)
 
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
@@ -416,3 +402,18 @@ if __name__ == '__main__':
 
 
     application.run_polling()
+
+
+# Main function
+if __name__ == '__main__':
+    main()
+    # Schedule the reset functions to run at appropriate times
+    schedule.every().day.at("00:00").do(utils.reset_daily_usage)
+    schedule.every().monday.at("00:00").do(utils.reset_weekly_usage)
+
+    loop = asyncio.get_event_loop()
+
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()

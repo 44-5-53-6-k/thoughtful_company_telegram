@@ -1,5 +1,6 @@
 # this bot is inteded to transcribe all voice and video messages sent by user, using telethon
 import os
+from datetime import datetime, timedelta
 
 import yaml
 from telethon import TelegramClient, events, sync
@@ -71,4 +72,5 @@ async def my_event_handler(event):
 
 
 client.start()
+print("bot started")
 client.run_until_disconnected()
