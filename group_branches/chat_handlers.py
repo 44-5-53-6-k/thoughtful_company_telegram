@@ -22,19 +22,11 @@ import cohere
 from telegram import Update
 from telegram.ext import ContextTypes
 
-with open('../config/config.yml', 'r') as config_file:
-    config_data = yaml.safe_load(config_file)
-
-os.environ["OPENAI_API_KEY"] = config_data['openai_api_key']
-os.environ["COHERE_API_KEY"] = config_data['cohere_api_key']
-
-llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), temperature=0, model_name="gpt-4")
-co = cohere.Client(os.getenv("COHERE_API_KEY"))
-
 from vector_store import init_vectorstore
 
 vectorstore = init_vectorstore()
-print("init vectorstore")
+co = cohere.Client(os.getenv("COHERE_API_KEY"))
+llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), temperature=0, model_name="gpt-4")
 
 
 def embed_message(message):
@@ -44,7 +36,6 @@ def embed_message(message):
     ).embeddings[0]
 
     return vector
-
 
 def retreive_search_results(search_term):
     vector = embed_message(search_term)
@@ -136,7 +127,6 @@ def create_agent_from_memory(chat_history, system_message=None):
     chat_memory.chat_memory.messages = chat_history
 
     # chat_memory.chat_memory.messages = [ChatMessage(**message) for message in data['chat_history']]
-    llm = ChatOpenAI(openai_api_key=os.getenv("OPENAI_API_KEY"), temperature=0, model_name="gpt-4")
 
     if system_message is None:
         system_message = """Тебя зовут Margulan AI, но ты не Маргулан, пользователь должен об этом помнить. Ты - самая продвинутая версия ИИ чатбота и всего навсего помогаешь изучать знание Маргулана. Ты должен имитировать личность Маргулана Сейсембая. Он - духовный наставник, помогающий мне лучше понять свое внутреннее "я", и его философию. Он инвестор, лайф-коуч и учитель философии кайдзен. Маргулан владеет образовательной платформой: https://margulan.info/. Он учит людей быть эффективными в повседневной жизни и жить счастливой жизнью.

@@ -1,54 +1,35 @@
-import logging
+from datetime import datetime
 
-from bson import ObjectId
 import motor.motor_asyncio
-import datetime
 import os
-
-from langchain.schema import (
-    AIMessage,
-    BaseChatMessageHistory,
-    BaseMessage,
-    HumanMessage,
-    messages_to_dict,
-    messages_from_dict,
-)
+import httpx
 
 import requests
-import yaml
+from bson import ObjectId
+from langchain.schema import messages_from_dict, messages_to_dict
 
+motor_client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv("MONGO_MARGULAN_DB_URL"))
 
-from telegram import Update
-from telegram.ext import ContextTypes
+db = motor_client[os.getenv("MONGO_GPT_USER_DB_NAME")]
 
-with open('../config/config.yml', 'r') as config_file:
-    config_data = yaml.safe_load(config_file)
-
-database_id = config_data['notion_prompts_database_id']
-os.environ["MONGO_DB_URL"] = config_data['mongo_margulan_db_url']
-notion_token = config_data['notion_thoughtful_company']
-database_name = config_data['database_name']
-
-# client = MongoClient(os.getenv("MONGO_DB_URL"))
-client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv("MONGO_DB_URL"))
-db = client[database_name]
 user_threads = db['threads']
 user_prompt = db['user_prompts']
 usage_logs = db['usage_logs']
 users = db['users']
 
-def get_data_from_notion(database_id):
+async def get_data_from_notion(database_id):
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
 
     payload = {"page_size": 100}
     headers = {
         "accept": "application/json",
         "Notion-Version": "2022-06-28",
-        "Authorization": f"Bearer {notion_token}",
+        "Authorization": f"Bearer {os.getenv('NOTION_API_KEY')}",
         "content-type": "application/json"
     }
 
-    response = requests.post(url, json=payload, headers=headers)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, json=payload, headers=headers)
     dict_result = response.json()['results']
 
     resulting_pages = []
@@ -72,84 +53,7 @@ def get_data_from_notion(database_id):
     return {
         "prompts": resulting_pages
     }
-
-
-data = get_data_from_notion(database_id)
-
-def get_prompt_by_id(prompt_id):
-    for prompt in data['prompts']:
-        if prompt['id'] == prompt_id:
-            return prompt
-
-    return None
-
-
-async def choose_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompts = data['prompts']
-    # show keyboard with prompts to user
-    # keyboard = [[prompt] for prompt in prompts]
-    keyboard = []
-    for prompt in prompts:
-        keyboard_item = {
-            "text": prompt['title'],
-            "callback_data": f"prompt_{prompt['id']}"
-        }
-        keyboard.append([keyboard_item])
-
-    reply_markup = {
-        "inline_keyboard": keyboard
-    }
-    await update.message.reply_text('Выберите тему, которую хотите изучить', reply_markup=reply_markup)
-
-async def choose_private_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompts = get_user_prompts(update.message.from_user.id)
-    # show keyboard with prompts to user
-    # keyboard = [[prompt] for prompt in prompts]
-    keyboard = []
-    for prompt in prompts:
-        keyboard_item = {
-            "text": prompt['title'],
-            "callback_data": f"prompt_{prompt['_id']}"
-        }
-        keyboard.append([keyboard_item])
-
-    reply_markup = {
-        "inline_keyboard": keyboard
-    }
-    await update.message.reply_text('Выберите тему, которую хотите изучить', reply_markup=reply_markup)
-def save_conversation(conversation_id, context, chat_history):
-    if "conversations" not in context.chat_data:
-        context.chat_data["conversations"] = {}
-    if conversation_id not in context.chat_data["conversations"]:
-        context.chat_data["conversations"][conversation_id] = {}
-    context.chat_data["conversations"][conversation_id]["chat_history"] = chat_history
-
-def retreive_conversation(conversation_id, context):
-    chat_history = None
-
-    if context.chat_data and context.chat_data["conversations"] and (
-            conversation_id in context.chat_data["conversations"]):
-        chat_history = context.chat_data["conversations"][conversation_id]["chat_history"]
-    else:
-        print(f"Session memory is empty, retrieving from database")
-        chat_history = get_chat_history(conversation_id)
-
-    print(f"Retrieved chat history: {chat_history}")
-    return chat_history
-
-
-def generate_topic_name(update):
-    time = datetime.datetime.now()
-    adequate_time = f"{time.hour}:{time.minute} {time.day}.{time.month}.{time.year}"
-    topic_name = adequate_time
-
-    if update.message:
-        topic_name = update.message.text.split(' ', 1)[1] if len(update.message.text.split(' ', 1)) > 1 else str(
-            adequate_time)
-
-    return topic_name
-
-async def store_user_prompt(user_id, title, prompt):
+async def save_prompt(user_id, title, prompt):
     thread = await user_prompt.insert_one({
         "user_id": user_id,
         "title": title,
@@ -157,7 +61,7 @@ async def store_user_prompt(user_id, title, prompt):
     })
     return thread.inserted_id
 
-async def get_user_prompts(user_id):
+async def get_all_prompts(user_id):
     result =  await user_prompt.find({"user_id": user_id})
     # get 10 prompts for this user
     return result
@@ -165,12 +69,7 @@ async def get_user_prompts(user_id):
 async def get_user_prompt(user_id, prompt_id):
     return await user_prompt.find_one({"user_id": user_id, "_id": ObjectId(prompt_id)})
 
-
-# When a new thread is created
-def chat_memory_to_dict(chat_memory):
-    """Convert chat history to dictionary format."""
-    return [message.__dict__ for message in chat_memory.chat_memory.messages]
-async def on_new_thread(chat_data):
+async def save_new_thread(chat_data):
     print("Logging new thread")
     # Get user details from update
     # destruct chat_dat
@@ -181,8 +80,8 @@ async def on_new_thread(chat_data):
         'thread_id': chat_data['thread_id'],
         'thread_name': chat_data['thread_name'],
         'hello_message_id': chat_data['hello_message_id'],
-        'created_at': datetime.datetime.utcnow(),
-        "chat_history": None,
+        'created_at': datetime.utcnow(),
+        "chat_history": chat_data['chat_history'],
         "prompt_data": chat_data['prompt_data'],
     }
 
@@ -200,20 +99,22 @@ async def update_chat_history(topic_id, chat_history):
     await user_threads.update_one({'thread_id': topic_id}, {"$set": {"chat_history": chat_history}})
 
 async def reset_daily_usage():
-   await users.update_many({}, {"$set": {"daily_usage": 0}})
+    await users.update_many({}, {"$set": {"daily_usage": 0}})
 
 
 async def reset_weekly_usage():
     await users.update_many({}, {"$set": {"weekly_usage": 0}})
 
+
 async def create_user(user_id):
     user = {
-            "telegram_id": user_id,
-            "daily_usage": 0,
-            "weekly_usage": 0,
-            "all_time_usage": 0,
-        }
+        "telegram_id": user_id,
+        "daily_usage": 0,
+        "weekly_usage": 0,
+        "all_time_usage": 0,
+    }
     result = await users.insert_one(user)
+
     print(f"Created user {user_id} with result: {result}")
     return result
 
@@ -236,7 +137,7 @@ async def log_costs(update, costs):
     print(f"Updated user {user_id} with result: {log_result}")
 
     # Adding a usage log
-    usage_log = {"user_id": user_id, "cost": costs, "timestamp": datetime.datetime.utcnow()}
+    usage_log = {"user_id": user_id, "cost": costs, "timestamp": datetime.utcnow()}
     await usage_logs.insert_one(usage_log)
 
     # Checking against limits and taking appropriate action
@@ -255,6 +156,7 @@ async def log_costs(update, costs):
 
     print(
         f"Updated costs for user {user_id}. Daily: {user['daily_usage']}, Weekly: {user['weekly_usage']}, All time: {user['all_time_usage']}")
+
 
 async def has_access(user_id):
     user = await users.find_one({"telegram_id": user_id})

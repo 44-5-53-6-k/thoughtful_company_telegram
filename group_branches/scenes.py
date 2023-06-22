@@ -4,7 +4,7 @@ from telegram.ext import ConversationHandler, CommandHandler, ContextTypes, Mess
 import datetime
 import re
 
-from group_branches import utils
+from group_branches import tg_utils
 
 
 def add_prompt_scene():
