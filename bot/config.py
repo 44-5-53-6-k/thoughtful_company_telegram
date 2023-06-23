@@ -9,7 +9,7 @@ with open(config_dir / "config.yml", 'r') as f:
     config_yaml = yaml.safe_load(f)
 
 # load .env config
-config_env = dotenv.dotenv_values(config_dir / "config.env")
+config_env = dotenv.dotenv_values(config_dir / ".env")
 
 # config parameters
 telegram_token = config_yaml["telegram_token"]

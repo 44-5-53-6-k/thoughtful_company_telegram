@@ -1,51 +1,11 @@
-import asyncio
+import uuid
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from langchain.callbacks import get_openai_callback
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, \
-    ApplicationHandlerStop, TypeHandler, CallbackQueryHandler
 from telegram.constants import ChatAction
+from telegram.ext import ContextTypes
 
-
-import uuid
-import yaml
-import os
-
-# get env with pyenv
-from dotenv import load_dotenv
-# file is in config/config.env. specify it
-load_dotenv(dotenv_path="../config/config.env")
-
-import tg_utils
-import db_utils
-from chat_handlers import init_memory, create_agent_from_memory
-from telethon_helper import fetch_user_ids
-
-
-USERS_WITH_ACCESS = fetch_user_ids('main_session', 1789045052)
-
-def get_system_message(path):
-    # Split path by "/"
-    path_parts = path.split('/')
-
-    messages_data = None
-    with open('system_messages/messages-en.json', 'r') as messages_file:
-        messages_data = yaml.safe_load(messages_file)
-
-    # Traverse through the dictionary
-    data = messages_data
-    for part in path_parts:
-        data = data.get(part)
-
-        # If at any point data is None, that means the path doesn't exist
-        # So we return a default message or handle it in another way
-        if data is None:
-            return 'Path does not exist'
-
-    # If we made it through the path without data being None, we return the found message
-    return data
-
+from telegram_bots import tg_utils, db_utils, chat_handlers, telethon_helper
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = update.message.chat.type == 'group' or update.message.chat.type == 'supergroup'
@@ -150,7 +110,7 @@ async def new_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         print("Trying to start the conversation")
         # CREATING AGENT
-        agent_memory = init_memory(topic_id)
+        agent_memory = chat_handlers.init_memory(topic_id)
 
         # SAVING AGENT to session memory
         # TODO #1 switch saving history to saving agent
@@ -185,7 +145,7 @@ async def get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not thread_data:
         thread_data = await db_utils.get_thread_data(conversation_id)
 
-    agent_chain = create_agent_from_memory(thread_data["chat_history"], thread_data["prompt_data"]['prompt'])
+    agent_chain = chat_handlers.create_agent_from_memory(thread_data["chat_history"], thread_data["prompt_data"]['prompt'])
 
     with get_openai_callback() as cb:
         try:
@@ -213,7 +173,7 @@ async def new_forum_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conversation_id = update.message.message_thread_id
     chat_history = tg_utils.retreive_conversation(conversation_id, context)
 
-    agent_chain = create_agent_from_memory(chat_history)
+    agent_chain = chat_handlers.create_agent_from_memory(chat_history)
     message = agent_chain.run(input=message_text)
 
     # UPDATE CHAT HISTORY IN MONGO
@@ -279,11 +239,13 @@ async def prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await new_chat(update, context)
 
 async def authorization_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id in USERS_WITH_ACCESS:
-        pass
-    else:
-        await update.effective_message.reply_text(get_system_message("authorization/access_denied"))
-        raise ApplicationHandlerStop
+    # todo add authorization
+    pass
+    # if update.effective_user.id in USERS_WITH_ACCESS:
+    #     pass
+    # else:
+    #     await update.effective_message.reply_text(get_system_message("authorization/access_denied"))
+    #     raise ApplicationHandlerStop
 
 
 
@@ -326,79 +288,12 @@ async def authorization_user(update: Update, context: ContextTypes.DEFAULT_TYPE)
 #
 #     application.run_polling()
 
-async def bot(application):
-    # Initialize application
-    await application.initialize()
+async def update_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    is_data_loaded = await tg_utils.load_data(context)
+    # todo check admin
+    username = update.effective_user.username
 
-    is_data_loaded = await tg_utils.load_data(application)
+
     if is_data_loaded is False:
-        print("Data is not loaded. Exiting.")
+        await update.message.reply_text("Data is not loaded. Exiting.")
         return
-
-    # Register all handlers
-    auth_handler = TypeHandler(Update, authorization_user)
-    application.add_handler(auth_handler, -1)
-
-    start_handler = CommandHandler('start', start)
-    application.add_handler(start_handler)
-
-    new_chat_handler = CommandHandler('new_chat', new_chat)
-    application.add_handler(new_chat_handler)
-
-    choose_prompt_handler = CommandHandler('choose_prompt', tg_utils.choose_prompt)
-    application.add_handler(choose_prompt_handler)
-
-    application.add_handler(CallbackQueryHandler(prompt_handler, 'prompt_'))
-
-    chat_handler = MessageHandler(filters.TEXT, new_message_router)
-    application.add_handler(chat_handler)
-
-    # Start the bot
-    await application.start()
-    await application.updater.start_polling()
-
-    # Keep the program running
-    try:
-        while True:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        # Stop the bot
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
-
-
-# Define an async function for our scheduler
-async def scheduler_tasks(scheduler):
-
-    # Schedule the reset functions to run at appropriate times
-    scheduler.add_job(db_utils.reset_daily_usage, 'cron', day_of_week='0-6', hour=0, minute=0)
-    scheduler.add_job(db_utils.reset_weekly_usage, 'cron', day_of_week='0', hour=0, minute=0)
-    scheduler.start()
-
-    # Keep the program running
-    try:
-        while True:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        # Shutdown the scheduler
-        scheduler.shutdown()
-
-
-# Define the main function
-def main():
-    # Create the bot application and the scheduler
-    application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
-    scheduler = AsyncIOScheduler()
-
-    # Run the bot and scheduler
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(asyncio.gather(bot(application), scheduler_tasks(scheduler)))
-    finally:
-        loop.close()
-
-
-# Main function
-if __name__ == '__main__':
-    main()

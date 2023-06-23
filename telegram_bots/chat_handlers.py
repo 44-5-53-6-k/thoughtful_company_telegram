@@ -22,7 +22,7 @@ import cohere
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from vector_store import init_vectorstore
+from telegram_bots.vector_store import init_vectorstore
 
 vectorstore = init_vectorstore()
 co = cohere.Client(os.getenv("COHERE_API_KEY"))

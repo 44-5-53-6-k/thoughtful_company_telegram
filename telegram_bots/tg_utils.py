@@ -19,10 +19,7 @@ import yaml
 from telegram import Update
 from telegram.ext import ContextTypes
 
-import group_branches.db_utils as db_utils
-
-with open('../config/config.yml', 'r') as config_file:
-    config_data = yaml.safe_load(config_file)
+import telegram_bots.db_utils as db_utils
 
 # todo rewrite so I can store this data in bot session storage
 def get_prompt_by_id(prompt_id):
@@ -32,7 +29,7 @@ def get_prompt_by_id(prompt_id):
 
     return None
 
-def load_data(application):
+async def load_data(context):
     # todo test this
     try:
         data_from_notion = await db_utils.get_data_from_notion(os.getenv("NOTION_PROMPTS_DATABASE_ID"))
@@ -40,17 +37,16 @@ def load_data(application):
         print(f"Error while loading data from notion: {e}")
         return None
 
-    if "notion" not in application.context.bot_data:
-        application.context.bot_data["notion"] = {}
     for datum in data_from_notion:
-        application.context.bot_data[datum] = data_from_notion[datum]
+        context.bot_data[datum] = data_from_notion[datum]
+        print(context.bot_data[datum])
 
     return True
 
-async def choose_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompts = data['prompts']
-    # show keyboard with prompts to user
-    # keyboard = [[prompt] for prompt in prompts]
+
+async def choose_predef_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompts = context.bot_data["prompts"]
+
     keyboard = []
     for prompt in prompts:
         keyboard_item = {

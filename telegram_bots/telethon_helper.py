@@ -5,20 +5,13 @@ import yaml
 from telethon import TelegramClient, events, sync
 
 # import from config/config.yml
-with open('../config/config.yml', 'r') as config_file:
-    config_data = yaml.safe_load(config_file)
-
-api_key = config_data['api_id']
-api_hash = config_data['api_hash']
 
 
 def fetch_user_ids(session_name, group_id):
     # import from config/config.yml
-    with open('../config/config.yml', 'r') as config_file:
-        config_data = yaml.safe_load(config_file)
 
-    api_key = config_data['api_id']
-    api_hash = config_data['api_hash']
+    api_key = os.getenv("API_ID")
+    api_hash = os.getenv("API_HASH")
 
     client = TelegramClient(session_name, api_key, api_hash)
     user_ids = []

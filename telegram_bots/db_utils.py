@@ -24,12 +24,13 @@ async def get_data_from_notion(database_id):
     headers = {
         "accept": "application/json",
         "Notion-Version": "2022-06-28",
-        "Authorization": f"Bearer {os.getenv('NOTION_API_KEY')}",
+        "Authorization": f"Bearer {os.getenv('NOTION_THOUGHTFUL_COMPANY')}",
         "content-type": "application/json"
     }
 
     async with httpx.AsyncClient() as client:
         response = await client.post(url, json=payload, headers=headers)
+
     dict_result = response.json()['results']
 
     resulting_pages = []
