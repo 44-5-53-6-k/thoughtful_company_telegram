@@ -1,10 +1,12 @@
+import uuid
 from typing import List, Union
 
 import re
 
-from langchain import LLMChain
+from langchain import LLMChain, PromptTemplate
 from langchain.agents import Tool, AgentOutputParser, AgentExecutor
 from langchain.agents.conversational_chat.base import ConversationalChatAgent
+from langchain.chains import create_extraction_chain, SimpleSequentialChain
 from langchain.memory import ConversationBufferMemory, MongoDBChatMessageHistory
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import BaseChatPromptTemplate
@@ -69,7 +71,7 @@ tools = [
 ]
 
 
-def init_memory(conversation_id):
+def init_memory():
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
     return memory
@@ -122,7 +124,7 @@ class CustomPromptTemplate(BaseChatPromptTemplate):
         return [HumanMessage(content=formatted)]
 
 
-def create_agent_from_memory(chat_history, system_message=None):
+def create_agent_from_memory(chat_history, system_message=None, tools=[]):
     chat_memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     chat_memory.chat_memory.messages = chat_history
 
@@ -142,7 +144,7 @@ def create_agent_from_memory(chat_history, system_message=None):
 
     human_message = """TOOLS
 ------
-Assistant MUST use tools every time to look up information that may be helpful in answering the users original question. The tools the human can use are:
+Assistant can use tools every time to look up information that may be helpful in answering the users original question. The tools the human can use are:
 
 {{tools}}
 
@@ -158,6 +160,7 @@ Here is the user's input (remember to respond with a markdown code snippet of a 
         tools=tools,
         system_message=system_message,
         human_message=human_message,
+        verbose=True
     )
 
     agent_chain = AgentExecutor.from_agent_and_tools(
@@ -170,3 +173,101 @@ Here is the user's input (remember to respond with a markdown code snippet of a 
     # agent_chain = initialize_agent(tools, llm, agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION, verbose=True, memory=chat_memory)
 
     return agent_chain
+
+
+class Expert:
+    def __init__(self, data):
+        self.name = data['expert_name']
+        self.description = data['expert_description']
+        self.id = uuid.uuid4().hex
+        self.match_score = float(data['match_score'])
+
+    def generate_message(self):
+        return f"""<b>{self.name}</b> 
+
+<em>{self.description}</em>
+
+<code>Match score: {self.match_score}</code>"""
+
+    def set_active(self, context: ContextTypes.DEFAULT_TYPE):
+        # TODO implement
+        context.chat_data['active_expert'] = self.id
+
+class Cohort:
+    def __init__(self, request):
+        self.experts = self.get_experts(request)
+
+    @staticmethod
+    def get_experts(input):
+        llm = ChatOpenAI(temperature=.7, top_p=0.2)
+        template = """You are an AI expert finder. Your task is: 
+        1. Identify the <area> of the problem, its domain, based on user input
+        2. To find 4 well-known experts that possess great knowledge in the <area>.  They should have verified expertise by working on projects. If the expert is somehow related to my problem, please include that in the description. 
+        You should also include match score which means how well the expert matches the user input. The match score should be between 0 and 1. 1 means that the expert is a perfect match for the user input. 0 means that the expert is not a match at all. You can use any metric to calculate the match score. The match score should be based on the expert description and the user input. The match score should be a number between 0 and 1. 1 means that the expert is a perfect match for the user input. 0 means that the expert is not a match at all. You can use any metric to calculate the match score. The match score should be based on the expert description and the user input. The match score should be a number between 0 and 1. 1 means that the expert is a perfect match for the user input. 0 means that the expert is not a match at all. You can use any metric to calculate the match score. 
+        The description should be formated as list.
+        
+        Answer in the language of the user input. Prefer english-speacking real experts.
+
+        User input is separated with backticks:
+        ```
+        {user_input}
+        ```
+
+        Do not generate anything else. Here is an example of output:
+        ```
+        - John Doe
+            - Description:: 
+                - Data scientist with 10 years of experience. 
+                - Worked on 5 projects related to NLP.
+                - Had experience with GPT-3.
+                - Writes articles about AI at medium.com.
+            - Match score: 0.8
+        ```
+        """
+        expert_generate_prompt = PromptTemplate(input_variables=["user_input"], template=template)
+        expert_generate_chain = LLMChain(llm=llm, prompt=expert_generate_prompt)
+
+        schema = {
+            "properties": {
+                "expert_name": {"type": "string"},
+                "expert_description": {"type": "string"},
+                "match_score": {"type": "number"},
+            },
+            "required": ["expert_name", "expert_description", "match_score"],
+        }
+
+        llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo-0613")
+        extraction_chain = create_extraction_chain(schema, llm)
+
+        overall_chain = SimpleSequentialChain(chains=[expert_generate_chain, extraction_chain],
+                                              verbose=True)
+
+        result = overall_chain(input)
+        experts = []
+
+        # assign uuid to each expert
+        for i, expert in enumerate(result["output"]):
+            # create expert add to output
+            expert = Expert(expert)
+            experts.append(expert)
+
+        # sort by match score
+        experts = sorted(experts, key=lambda x: x.match_score, reverse=True)
+
+        return experts
+
+    def save_experts(self, context):
+        for i, expert in enumerate(self.experts):
+            if expert is None:
+                # add logging here
+                continue
+
+            if "experts" not in context.chat_data:
+                context.chat_data["experts"] = {}
+            context.chat_data['experts'][f"{expert.id}"] = expert
+
+        return context
+
+    @classmethod
+    def generate_from_input(cls, input):
+        return cls(request=input)
