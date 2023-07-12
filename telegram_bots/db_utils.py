@@ -8,6 +8,10 @@ import requests
 from bson import ObjectId
 from langchain.schema import messages_from_dict, messages_to_dict
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 motor_client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv("MONGO_MARGULAN_DB_URL"))
 
 db = motor_client[os.getenv("MONGO_GPT_USER_DB_NAME")]
@@ -70,28 +74,22 @@ async def get_all_prompts(user_id):
 async def get_user_prompt(user_id, prompt_id):
     return await user_prompt.find_one({"user_id": user_id, "_id": ObjectId(prompt_id)})
 
-async def save_new_thread(chat_data):
-    print("Logging new thread")
-    # Get user details from update
-    # destruct chat_dat
+async def save_thread(chat_data):
+    logger.info(f"Saving new thread with ID {chat_data['thread_id']} for user {chat_data['user_id']}")
 
-    new_thread = {
-        'user_id': chat_data['user_id'],
-        'chat_id': chat_data['chat_id'],
-        'thread_id': chat_data['thread_id'],
-        'thread_name': chat_data['thread_name'],
-        'hello_message_id': chat_data['hello_message_id'],
-        'created_at': datetime.utcnow(),
-        "chat_history": chat_data['chat_history'],
-        "prompt_data": chat_data['prompt_data'],
-    }
+    try:
+        thread = await user_threads.update_one(
+            {"thread_id": chat_data['thread_id']},
+            {"$set": chat_data},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"Error saving thread {chat_data['thread_id']} in mongo: {e}")
+        return None
+    logger.info(f"Conversation saved. User id: {chat_data['user_id']}. Thread id: {thread_id}.")
 
+    return
 
-    # Insert the new thread into the collection
-    thread = await user_threads.insert_one(new_thread)
-    thread_id = thread.inserted_id
-    print(f"Conversation saved. Thread id: {thread_id}.")
-    return thread_id
 
 # When a new message arrives
 async def update_chat_history(topic_id, chat_history):
